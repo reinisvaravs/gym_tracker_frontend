@@ -1,0 +1,11 @@
+{
+  "entry": [
+    "src/app/**/page.{js,jsx,ts,tsx}",
+    "src/app/**/layout.{js,jsx,ts,tsx}"
+  ],
+  "project": [
+    "src/app/**/*.{js,jsx,ts,tsx,css}",
+    "src/components/**/*.{js,jsx,ts,tsx,css}",
+    "src/lib/**/*.{js,jsx,ts,tsx,css}"
+  ]
+}
