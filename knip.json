@@ -1,7 +1,8 @@
 {
   "entry": [
     "src/app/**/page.{js,jsx,ts,tsx}",
-    "src/app/**/layout.{js,jsx,ts,tsx}"
+    "src/app/**/layout.{js,jsx,ts,tsx}",
+    "src/components/ui/**/*.{js,jsx,ts,tsx}"
   ],
   "project": [
     "src/app/**/*.{js,jsx,ts,tsx,css}",
