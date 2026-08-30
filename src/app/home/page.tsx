@@ -13,13 +13,26 @@ import {
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
+type TrainingSet = {
+  id: number;
+  set_order: number;
+  weight_kg: number | null;
+  reps: number | null;
+  duration_seconds: number | null;
+  distance_km: number | null;
+  avg_speed_kmh: number | null;
+  avg_heart_rate_bpm: number | null;
+  avg_power_watts: number | null;
+  avg_cadence: number | null;
+};
+
 type Session = {
   id: number;
   performed_on: string;
   notes: string | null;
   training_name: string;
   category: "weighted_reps" | "bodyweight_reps" | "cardio";
-  set_count: number;
+  sets: TrainingSet[];
 };
 
 type View = "list" | "calendar";
@@ -30,6 +43,38 @@ const CATEGORY_DOTS: Record<Session["category"], string> = {
   bodyweight_reps: "bg-chart-3",
   cardio: "bg-chart-2",
 };
+
+// "2026-08-12" -> local midnight. new Date("2026-08-12") parses as UTC and
+// renders as the day before west of Greenwich.
+const parseDay = (value: string) => {
+  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+  return new Date(year, month - 1, day);
+};
+
+// 3725 -> "1:02:05", 330 -> "5:30"
+const formatDuration = (seconds: number) => {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0
+    ? `${h}:${pad(m)}:${pad(seconds % 60)}`
+    : `${m}:${pad(seconds % 60)}`;
+};
+
+const SET_COLUMNS: {
+  key: keyof TrainingSet;
+  label: string;
+  format: (value: number) => string;
+}[] = [
+  { key: "weight_kg", label: "Weight", format: (v) => `${v} kg` },
+  { key: "reps", label: "Reps", format: (v) => `${v}` },
+  { key: "duration_seconds", label: "Duration", format: formatDuration },
+  { key: "distance_km", label: "Distance", format: (v) => `${v} km` },
+  { key: "avg_speed_kmh", label: "Avg speed", format: (v) => `${v} km/h` },
+  { key: "avg_heart_rate_bpm", label: "Avg HR", format: (v) => `${v} bpm` },
+  { key: "avg_power_watts", label: "Avg power", format: (v) => `${v} W` },
+  { key: "avg_cadence", label: "Cadence", format: (v) => `${v}` },
+];
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -76,6 +121,55 @@ const buildMonthGrid = (month: Date) => {
   });
 };
 
+function SessionSets({ sets }: { sets: TrainingSet[] }) {
+  // Only the columns some set actually fills, so a bench session shows two
+  // and a bike ride shows six without a per-category branch.
+  const columns = SET_COLUMNS.filter((column) =>
+    sets.some((set) => set[column.key] !== null),
+  );
+
+  if (sets.length === 0) {
+    return <p className="text-muted-foreground text-sm">No sets recorded.</p>;
+  }
+
+  return (
+    <div className="ring-foreground/10 overflow-x-auto rounded-lg ring-1">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/50 text-muted-foreground text-xs">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium">Set</th>
+            {columns.map((column) => (
+              <th key={column.key} className="px-3 py-2 text-right font-medium">
+                {column.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sets.map((set) => (
+            <tr key={set.id} className="border-t">
+              <td className="text-muted-foreground px-3 py-2 tabular-nums">
+                {set.set_order}
+              </td>
+              {columns.map((column) => {
+                const value = set[column.key];
+                return (
+                  <td
+                    key={column.key}
+                    className="px-3 py-2 text-right tabular-nums"
+                  >
+                    {value === null ? "—" : column.format(value as number)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,6 +179,10 @@ export default function Home() {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  // Calendar day whose sets are shown below the grid. Clicking pins a day,
+  // hovering only previews it, so touch and keyboard work the same as a mouse.
+  const [pinnedKey, setPinnedKey] = useState<string | null>(null);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -144,6 +242,10 @@ export default function Home() {
 
   const days = useMemo(() => buildMonthGrid(month), [month]);
   const todayKey = localKey(new Date());
+
+  // A pinned day wins over whatever is merely hovered
+  const activeKey = pinnedKey ?? hoveredKey;
+  const activeSessions = activeKey ? (sessionsByDate.get(activeKey) ?? []) : [];
 
   const shiftMonth = (delta: number) =>
     setMonth(
@@ -246,15 +348,19 @@ export default function Home() {
                 const key = localKey(day);
                 const daySessions = sessionsByDate.get(key) ?? [];
                 const inMonth = day.getMonth() === month.getMonth();
+                // Empty days stay plain divs so they don't become tab stops
+                const interactive = daySessions.length > 0;
 
-                return (
-                  <div
-                    key={key}
-                    className={cn(
-                      "bg-card flex min-h-24 flex-col gap-1 p-1.5",
-                      !inMonth && "bg-muted/40 text-muted-foreground",
-                    )}
-                  >
+                const cellClass = cn(
+                  "bg-card flex min-h-24 flex-col gap-1 p-1.5 text-left",
+                  !inMonth && "bg-muted/40 text-muted-foreground",
+                  interactive &&
+                    "hover:bg-muted/60 cursor-pointer transition-colors",
+                  pinnedKey === key && "ring-primary ring-2 ring-inset",
+                );
+
+                const content = (
+                  <>
                     <span
                       className={cn(
                         "text-xs tabular-nums",
@@ -269,7 +375,6 @@ export default function Home() {
                     {daySessions.slice(0, 2).map((session) => (
                       <span
                         key={session.id}
-                        title={`${session.training_name} · ${session.set_count} set${session.set_count === 1 ? "" : "s"}`}
                         className="bg-muted flex items-center gap-1 truncate rounded px-1 py-0.5 text-[0.65rem] leading-tight"
                       >
                         <span
@@ -289,10 +394,83 @@ export default function Home() {
                         +{daySessions.length - 2} more
                       </span>
                     )}
+                  </>
+                );
+
+                return interactive ? (
+                  <button
+                    key={key}
+                    type="button"
+                    className={cellClass}
+                    aria-pressed={pinnedKey === key}
+                    onMouseEnter={() => setHoveredKey(key)}
+                    onMouseLeave={() =>
+                      setHoveredKey((current) =>
+                        current === key ? null : current,
+                      )
+                    }
+                    onFocus={() => setHoveredKey(key)}
+                    onBlur={() =>
+                      setHoveredKey((current) =>
+                        current === key ? null : current,
+                      )
+                    }
+                    onClick={() =>
+                      setPinnedKey((current) => (current === key ? null : key))
+                    }
+                  >
+                    {content}
+                  </button>
+                ) : (
+                  <div key={key} className={cellClass}>
+                    {content}
                   </div>
                 );
               })}
             </div>
+
+            {/* Rendered below the grid rather than as a popover: the grid is
+                overflow-hidden, which would clip anything absolutely
+                positioned inside it. */}
+            {activeKey && activeSessions.length > 0 && (
+              <div className="mt-4 flex min-h-48 flex-col gap-3 border-t pt-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-heading text-sm font-medium">
+                    {formatDay(parseDay(activeKey))}
+                  </h3>
+                  {pinnedKey && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setPinnedKey(null)}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+
+                {activeSessions.map((session) => (
+                  <div key={session.id} className="flex flex-col gap-2">
+                    <div className="flex items-baseline gap-2">
+                      <span
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          CATEGORY_DOTS[session.category],
+                        )}
+                      />
+                      <span className="text-sm font-medium">
+                        {session.training_name}
+                      </span>
+                      <span className="text-muted-foreground text-xs">
+                        {session.sets.length} set
+                        {session.sets.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <SessionSets sets={session.sets} />
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : sessions.length === 0 ? (
@@ -312,14 +490,19 @@ export default function Home() {
                 <CardHeader>
                   <CardTitle>{session.training_name}</CardTitle>
                   <CardDescription>
-                    {session.set_count} set{session.set_count === 1 ? "" : "s"}
+                    {session.sets.length} set
+                    {session.sets.length === 1 ? "" : "s"}
+                    <span className="mx-1.5">·</span>
+                    <span className="capitalize">
+                      {session.category.replace(/_/g, " ")}
+                    </span>
                   </CardDescription>
                   <CardAction>
                     <time
                       dateTime={session.performed_on}
                       className="text-muted-foreground text-xs tabular-nums"
                     >
-                      {formatDay(new Date(session.performed_on))}
+                      {formatDay(parseDay(session.performed_on))}
                     </time>
                   </CardAction>
                 </CardHeader>
@@ -330,6 +513,9 @@ export default function Home() {
                     </p>
                   </CardContent>
                 )}
+                <CardContent>
+                  <SessionSets sets={session.sets} />
+                </CardContent>
               </Card>
             </li>
           ))}
