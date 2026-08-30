@@ -1,6 +1,15 @@
+import type { Viewport } from "next";
 import { Poppins } from "next/font/google";
 import "./globals.css";
 import type { ReactNode } from "react";
+
+// viewport-fit=cover lets env(safe-area-inset-*) work on notched phones, so
+// the bottom tab bar can pad itself above the home indicator
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
 
 const poppins = Poppins({
   variable: "--font-poppins",

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { MinusIcon, PlusIcon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -52,12 +53,80 @@ const splitDuration = (draft: Draft) => {
   };
 };
 
+// The two high-frequency fields get big − / + buttons: between sets you are
+// tired and usually nudging the previous value, not typing a fresh one.
+function Stepper({
+  label,
+  value,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  step: number;
+  onChange: (value: string) => void;
+}) {
+  const nudge = (delta: number) => {
+    const current = Number(value) || 0;
+    // round to 2dp so 0.1-steps of floating point never show up
+    const next = Math.round((current + delta) * 100) / 100;
+    onChange(next > 0 ? String(next) : "");
+  };
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <span className="text-muted-foreground text-center text-xs font-medium">
+        {label}
+      </span>
+      <div className="flex items-center gap-1.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="size-11 shrink-0"
+          aria-label={`Decrease ${label}`}
+          onClick={() => nudge(-step)}
+        >
+          <MinusIcon />
+        </Button>
+        <Input
+          type="number"
+          inputMode="decimal"
+          step="any"
+          min="0"
+          placeholder="0"
+          className="h-11 min-w-0 flex-1 text-center text-base font-semibold tabular-nums"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="size-11 shrink-0"
+          aria-label={`Increase ${label}`}
+          onClick={() => nudge(step)}
+        >
+          <PlusIcon />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const STEPPER_FIELDS: Partial<Record<SetField, number>> = {
+  weight_kg: 2.5,
+  reps: 1,
+};
+
 export function SetForm({
   category,
   initialSet,
   submitLabel,
   onSubmit,
   onCancel,
+  cancelLabel = "Cancel",
+  onDelete,
 }: {
   category: Category;
   // An existing set to edit, or the previous set to prefill from — most sets
@@ -66,6 +135,9 @@ export function SetForm({
   submitLabel: string;
   onSubmit: (set: SetInput) => Promise<void>;
   onCancel?: () => void;
+  cancelLabel?: string;
+  // Present only when editing an existing set
+  onDelete?: () => Promise<void>;
 }) {
   const fields = CATEGORY_FIELDS[category];
   const [draft, setDraft] = useState<Draft>(() => toDraft(initialSet));
@@ -121,79 +193,139 @@ export function SetForm({
     }
   };
 
+  const handleDelete = async () => {
+    if (!onDelete || saving) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onDelete();
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : "Could not delete",
+      );
+      setSaving(false);
+    }
+  };
+
+  const stepperFields = fields.filter((field) => STEPPER_FIELDS[field]);
+  const inputFields = fields.filter((field) => !STEPPER_FIELDS[field]);
   const duration = splitDuration(draft);
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-end gap-2">
-        {fields.map((field) =>
-          field === "duration_seconds" ? (
-            <div key={field} className="flex flex-col gap-1">
-              <label className="text-muted-foreground text-xs">
-                {FIELD_LABELS[field]}
-              </label>
-              <div className="flex items-center gap-1">
+    <form
+      onSubmit={handleSubmit}
+      className="bg-muted/40 ring-foreground/10 flex flex-col gap-3 rounded-xl p-3 ring-1"
+    >
+      {stepperFields.length > 0 && (
+        <div className="flex gap-3">
+          {stepperFields.map((field) => (
+            <Stepper
+              key={field}
+              label={FIELD_LABELS[field]}
+              step={STEPPER_FIELDS[field] ?? 1}
+              value={draft[field] ?? ""}
+              onChange={(value) => setField(field, value)}
+            />
+          ))}
+        </div>
+      )}
+
+      {inputFields.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          {inputFields.map((field) =>
+            field === "duration_seconds" ? (
+              <div key={field} className="flex flex-col gap-1.5">
+                <span className="text-muted-foreground text-xs font-medium">
+                  {FIELD_LABELS[field]}
+                </span>
+                <div className="flex items-center gap-1">
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    aria-label="Minutes"
+                    placeholder="min"
+                    className="h-11 min-w-0 text-center"
+                    value={duration.minutes}
+                    onChange={(event) =>
+                      setDurationPart("minutes", event.target.value)
+                    }
+                  />
+                  <span className="text-muted-foreground">:</span>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    max="59"
+                    aria-label="Seconds"
+                    placeholder="sec"
+                    className="h-11 min-w-0 text-center"
+                    value={duration.seconds}
+                    onChange={(event) =>
+                      setDurationPart("seconds", event.target.value)
+                    }
+                  />
+                </div>
+              </div>
+            ) : (
+              <div key={field} className="flex flex-col gap-1.5">
+                <label
+                  htmlFor={`set-${field}`}
+                  className="text-muted-foreground text-xs font-medium"
+                >
+                  {FIELD_LABELS[field]}
+                </label>
                 <Input
+                  id={`set-${field}`}
                   type="number"
-                  inputMode="numeric"
+                  inputMode="decimal"
+                  step="any"
                   min="0"
-                  aria-label="Minutes"
-                  placeholder="min"
-                  className="w-16"
-                  value={duration.minutes}
-                  onChange={(event) =>
-                    setDurationPart("minutes", event.target.value)
-                  }
-                />
-                <span className="text-muted-foreground text-xs">:</span>
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  min="0"
-                  max="59"
-                  aria-label="Seconds"
-                  placeholder="sec"
-                  className="w-16"
-                  value={duration.seconds}
-                  onChange={(event) =>
-                    setDurationPart("seconds", event.target.value)
-                  }
+                  className="h-11"
+                  value={draft[field] ?? ""}
+                  onChange={(event) => setField(field, event.target.value)}
                 />
               </div>
-            </div>
+            ),
+          )}
+        </div>
+      )}
+
+      {error && <p className="text-destructive text-sm">{error}</p>}
+
+      <Button type="submit" className="h-11 w-full" disabled={saving}>
+        {saving ? "Saving…" : submitLabel}
+      </Button>
+
+      {(onDelete || onCancel) && (
+        <div className="flex items-center justify-between gap-2">
+          {onDelete ? (
+            <Button
+              type="button"
+              variant="destructive"
+              className="h-10 flex-1"
+              disabled={saving}
+              onClick={handleDelete}
+            >
+              Delete set
+            </Button>
           ) : (
-            <div key={field} className="flex flex-col gap-1">
-              <label
-                htmlFor={`set-${field}`}
-                className="text-muted-foreground text-xs"
-              >
-                {FIELD_LABELS[field]}
-              </label>
-              <Input
-                id={`set-${field}`}
-                type="number"
-                inputMode="decimal"
-                step="any"
-                min="0"
-                className="w-24"
-                value={draft[field] ?? ""}
-                onChange={(event) => setField(field, event.target.value)}
-              />
-            </div>
-          ),
-        )}
-
-        <Button type="submit" size="sm" disabled={saving}>
-          {saving ? "Saving…" : submitLabel}
-        </Button>
-        {onCancel && (
-          <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-        )}
-      </div>
-
-      {error && <p className="text-destructive text-xs">{error}</p>}
+            <span />
+          )}
+          {onCancel && (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-10 flex-1"
+              onClick={onCancel}
+            >
+              {cancelLabel}
+            </Button>
+          )}
+        </div>
+      )}
     </form>
   );
 }
