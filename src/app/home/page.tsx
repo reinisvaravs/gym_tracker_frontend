@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { AddExercise } from "@/components/add-exercise";
+import { ExerciseLog } from "@/components/exercise-log";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -11,105 +13,24 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { api } from "@/lib/api";
+import {
+  CATEGORY_DOTS,
+  formatSet,
+  localKey,
+  parseDay,
+  sortSessions,
+  todayKey,
+  type Category,
+  type Session,
+  type SetInput,
+  type TrainingType,
+} from "@/lib/training";
 import { cn } from "@/lib/utils";
-
-type TrainingSet = {
-  id: number;
-  set_order: number;
-  weight_kg: number | null;
-  reps: number | null;
-  duration_seconds: number | null;
-  distance_km: number | null;
-  avg_speed_kmh: number | null;
-  avg_heart_rate_bpm: number | null;
-  avg_power_watts: number | null;
-  avg_cadence: number | null;
-};
-
-type Session = {
-  id: number;
-  performed_on: string;
-  notes: string | null;
-  training_name: string;
-  category: "weighted_reps" | "bodyweight_reps" | "cardio";
-  sets: TrainingSet[];
-};
 
 type View = "list" | "calendar";
 
-// dot colour per category, used in the calendar cells
-const CATEGORY_DOTS: Record<Session["category"], string> = {
-  weighted_reps: "bg-chart-5",
-  bodyweight_reps: "bg-chart-3",
-  cardio: "bg-chart-2",
-};
-
-// "2026-08-12" -> local midnight. new Date("2026-08-12") parses as UTC and
-// renders as the day before west of Greenwich.
-const parseDay = (value: string) => {
-  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
-  return new Date(year, month - 1, day);
-};
-
-// 3725 -> "1:02:05", 330 -> "5:30"
-const formatDuration = (seconds: number) => {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return h > 0
-    ? `${h}:${pad(m)}:${pad(seconds % 60)}`
-    : `${m}:${pad(seconds % 60)}`;
-};
-
-// One set on one line, in the shorthand a lifter would actually write:
-// "60 × 8" for weights, "× 12" bodyweight, "5.2 km · 24:30 · 12.7 km/h" cardio.
-// Which parts appear follows the data, so no per-category branching.
-const formatSet = (set: TrainingSet) => {
-  const parts: string[] = [];
-
-  if (set.weight_kg !== null) {
-    parts.push(
-      set.reps !== null
-        ? `${set.weight_kg} × ${set.reps}`
-        : `${set.weight_kg} kg`,
-    );
-  } else if (set.reps !== null) {
-    parts.push(`× ${set.reps}`);
-  }
-
-  if (set.distance_km !== null) {
-    parts.push(`${set.distance_km} km`);
-  }
-  if (set.duration_seconds !== null) {
-    parts.push(formatDuration(set.duration_seconds));
-  }
-  if (set.avg_speed_kmh !== null) {
-    parts.push(`${set.avg_speed_kmh} km/h`);
-  }
-  if (set.avg_heart_rate_bpm !== null) {
-    parts.push(`${set.avg_heart_rate_bpm} bpm`);
-  }
-  if (set.avg_power_watts !== null) {
-    parts.push(`${set.avg_power_watts} W`);
-  }
-  if (set.avg_cadence !== null) {
-    parts.push(`${set.avg_cadence} rpm`);
-  }
-
-  return parts.join(" · ") || "—";
-};
-
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-// "2026-08-12" / "2026-08-12T00:00:00Z" -> "2026-08-12" without timezone drift
-const dateKey = (performedOn: string) => {
-  const iso = performedOn.slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
-    return iso;
-  }
-  const parsed = new Date(performedOn);
-  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
-};
 
 const CURRENT_YEAR = new Date().getFullYear();
 
@@ -127,9 +48,6 @@ const formatMonth = (date: Date) =>
     ...(date.getFullYear() === CURRENT_YEAR ? {} : { year: "numeric" }),
   });
 
-const localKey = (date: Date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-
 // 6-week grid (42 days) starting on the Monday on or before the 1st
 const buildMonthGrid = (month: Date) => {
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
@@ -144,7 +62,8 @@ const buildMonthGrid = (month: Date) => {
   });
 };
 
-function SessionSets({ sets }: { sets: TrainingSet[] }) {
+// Read-only set list, for the calendar preview where nothing is editable
+function SessionSets({ sets }: { sets: Session["sets"] }) {
   if (sets.length === 0) {
     return <p className="text-muted-foreground text-xs">No sets recorded.</p>;
   }
@@ -162,8 +81,10 @@ function SessionSets({ sets }: { sets: TrainingSet[] }) {
 
 export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [types, setTypes] = useState<TrainingType[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<View>("list");
   const [month, setMonth] = useState(() => {
     const now = new Date();
@@ -174,37 +95,31 @@ export default function Home() {
   const [pinnedKey, setPinnedKey] = useState<string | null>(null);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
+  // Today is what you log into, and it is recomputed per render so a session
+  // spanning midnight doesn't keep writing into yesterday.
+  const today = todayKey();
+
   useEffect(() => {
     const controller = new AbortController();
 
-    // Get all sessions
-    const getAllSessions = async () => {
+    const load = async () => {
       try {
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE_URL}/sessions/get-all`,
-          {
-            method: "GET",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            credentials: "include", // include cookies in the request
-            signal: controller.signal,
-          },
-        );
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          setError(errorData.message || "Sessions fetch failed");
-          return;
-        }
-
-        setSessions(await response.json());
-      } catch (error) {
+        const [loadedSessions, loadedTypes] = await Promise.all([
+          api.getSessions(controller.signal),
+          api.getTypes(controller.signal),
+        ]);
+        setSessions(loadedSessions);
+        setTypes(loadedTypes);
+      } catch (loadError) {
         if (controller.signal.aborted) {
           return;
         }
-        console.error("Error fetching sessions:", error);
-        setError("An error occurred while loading sessions.");
+        console.error("Error loading:", loadError);
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "An error occurred while loading.",
+        );
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -212,14 +127,106 @@ export default function Home() {
       }
     };
 
-    getAllSessions();
+    load();
     return () => controller.abort();
   }, []);
+
+  // Every mutation patches local state from the server's response instead of
+  // refetching: the whole history is already in memory, so a round-trip would
+  // only re-download what we just changed.
+  const run = useCallback(async (action: () => Promise<void>) => {
+    try {
+      setActionError(null);
+      await action();
+    } catch (mutationError) {
+      setActionError(
+        mutationError instanceof Error
+          ? mutationError.message
+          : "Something went wrong",
+      );
+      throw mutationError;
+    }
+  }, []);
+
+  const addExercise = useCallback(
+    (type: TrainingType) =>
+      run(async () => {
+        const created = await api.createSession(type.id, today);
+        setSessions((current) => sortSessions([...current, created]));
+      }),
+    [run, today],
+  );
+
+  const createType = useCallback(async (name: string, category: Category) => {
+    const created = await api.createType(name, category);
+    setTypes((current) =>
+      [...current, created].sort((a, b) =>
+        a.training_name.localeCompare(b.training_name),
+      ),
+    );
+    return created;
+  }, []);
+
+  const addSet = useCallback(
+    (sessionId: number, set: SetInput) =>
+      run(async () => {
+        const created = await api.addSet(sessionId, set);
+        setSessions((current) =>
+          current.map((session) =>
+            session.id === sessionId
+              ? { ...session, sets: [...session.sets, created] }
+              : session,
+          ),
+        );
+      }),
+    [run],
+  );
+
+  const editSet = useCallback(
+    (setId: number, set: SetInput) =>
+      run(async () => {
+        const updated = await api.editSet(setId, set);
+        setSessions((current) =>
+          current.map((session) => ({
+            ...session,
+            sets: session.sets.map((existing) =>
+              existing.id === setId ? updated : existing,
+            ),
+          })),
+        );
+      }),
+    [run],
+  );
+
+  const deleteSet = useCallback(
+    (setId: number) =>
+      run(async () => {
+        await api.deleteSet(setId);
+        setSessions((current) =>
+          current.map((session) => ({
+            ...session,
+            sets: session.sets.filter((existing) => existing.id !== setId),
+          })),
+        );
+      }),
+    [run],
+  );
+
+  const deleteSession = useCallback(
+    (sessionId: number) =>
+      run(async () => {
+        await api.deleteSession(sessionId);
+        setSessions((current) =>
+          current.filter((session) => session.id !== sessionId),
+        );
+      }),
+    [run],
+  );
 
   const sessionsByDate = useMemo(() => {
     const map = new Map<string, Session[]>();
     for (const session of sessions) {
-      const key = dateKey(session.performed_on);
+      const key = session.performed_on.slice(0, 10);
       const bucket = map.get(key);
       if (bucket) {
         bucket.push(session);
@@ -230,15 +237,17 @@ export default function Home() {
     return map;
   }, [sessions]);
 
-  // The API orders sessions newest-first, and a Map keeps insertion order,
-  // so the days come out newest-first too.
-  const groupedDays = useMemo(
-    () => [...sessionsByDate.entries()],
-    [sessionsByDate],
-  );
+  // The API orders sessions newest day first, and a Map keeps insertion
+  // order, so the days come out newest-first too. Today is pinned to the top
+  // even before it has any exercises, since that is what you log into.
+  const groupedDays = useMemo(() => {
+    const entries = [...sessionsByDate.entries()];
+    return sessionsByDate.has(today)
+      ? entries
+      : [[today, []] as const, ...entries];
+  }, [sessionsByDate, today]);
 
   const days = useMemo(() => buildMonthGrid(month), [month]);
-  const todayKey = localKey(new Date());
 
   // A pinned day wins over whatever is merely hovered
   const activeKey = pinnedKey ?? hoveredKey;
@@ -282,6 +291,21 @@ export default function Home() {
           ))}
         </div>
       </header>
+
+      {/* Mutation failures surface here rather than replacing the log: the
+          sets you already saved should stay on screen. */}
+      {actionError && (
+        <div className="ring-destructive/30 bg-destructive/10 text-destructive flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm ring-1">
+          <span>{actionError}</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setActionError(null)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex flex-col gap-3">
@@ -361,7 +385,7 @@ export default function Home() {
                     <span
                       className={cn(
                         "text-xs tabular-nums",
-                        key === todayKey &&
+                        key === today &&
                           "bg-primary text-primary-foreground inline-flex size-5 items-center justify-center rounded-full font-medium",
                         inMonth ? "" : "opacity-60",
                       )}
@@ -466,65 +490,66 @@ export default function Home() {
             )}
           </CardContent>
         </Card>
-      ) : sessions.length === 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>No sessions yet</CardTitle>
-            <CardDescription>
-              Log your first workout and it will show up here.
-            </CardDescription>
-          </CardHeader>
-        </Card>
       ) : (
         <ul className="flex flex-col gap-3">
-          {groupedDays.map(([key, daySessions]) => (
-            <li key={key}>
-              <Card size="sm">
-                <CardHeader>
-                  <CardTitle>
-                    {/* The date is the anchor when scrolling, so it sets its
+          {groupedDays.map(([key, daySessions]) => {
+            const isToday = key === today;
+
+            return (
+              <li key={key}>
+                <Card size="sm">
+                  <CardHeader>
+                    <CardTitle>
+                      {/* The date is the anchor when scrolling, so it sets its
                           own size rather than inheriting the card's small
                           title scale. */}
-                    <time
-                      dateTime={key}
-                      className="font-heading text-lg font-semibold tracking-tight"
-                    >
-                      {formatDay(parseDay(key))}
-                    </time>
-                  </CardTitle>
-                </CardHeader>
-
-                <CardContent className="divide-y">
-                  {daySessions.map((session) => (
-                    <div
-                      key={session.id}
-                      className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0"
-                    >
-                      <div className="flex items-baseline gap-2">
-                        <span
-                          className={cn(
-                            "size-1.5 shrink-0 rounded-full",
-                            CATEGORY_DOTS[session.category],
-                          )}
-                        />
-                        <span className="text-sm font-medium">
-                          {session.training_name}
+                      <time
+                        dateTime={key}
+                        className="font-heading text-lg font-semibold tracking-tight"
+                      >
+                        {formatDay(parseDay(key))}
+                      </time>
+                      {isToday && (
+                        <span className="text-muted-foreground ml-2 text-xs font-normal">
+                          Today
                         </span>
-                      </div>
-
-                      <SessionSets sets={session.sets} />
-
-                      {session.notes && (
-                        <p className="text-muted-foreground border-l-2 pl-2 text-xs">
-                          {session.notes}
-                        </p>
                       )}
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            </li>
-          ))}
+                    </CardTitle>
+                  </CardHeader>
+
+                  <CardContent className="divide-y">
+                    {daySessions.map((session) => (
+                      <div
+                        key={session.id}
+                        className="py-3 first:pt-0 last:pb-0"
+                      >
+                        <ExerciseLog
+                          session={session}
+                          editable={isToday}
+                          onAddSet={addSet}
+                          onEditSet={editSet}
+                          onDeleteSet={deleteSet}
+                          onDeleteSession={deleteSession}
+                        />
+                      </div>
+                    ))}
+
+                    {/* Logging only happens on today, so the picker lives at
+                        the bottom of today's card and nowhere else. */}
+                    {isToday && (
+                      <div className="pt-3 first:pt-0">
+                        <AddExercise
+                          types={types}
+                          onPick={addExercise}
+                          onCreateType={createType}
+                        />
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </li>
+            );
+          })}
         </ul>
       )}
     </main>
