@@ -96,6 +96,20 @@ export default function Home() {
   // the rest of the history compact and safe from stray taps.
   const [editingDay, setEditingDay] = useState<string | null>(null);
 
+  // Names of training types the log view is narrowed to; empty = show all.
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+
+  const toggleTypeFilter = (name: string) =>
+    setTypeFilter((current) => {
+      const next = new Set(current);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+
   useEffect(() => {
     const controller = new AbortController();
 
@@ -252,6 +266,29 @@ export default function Home() {
       ? entries
       : [[today, []] as const, ...entries];
   }, [sessionsByDate, today]);
+
+  // Only types that actually appear in the log are worth offering as chips.
+  const filterableTypes = useMemo(() => {
+    const used = new Set(sessions.map((session) => session.training_name));
+    return types.filter((type) => used.has(type.training_name));
+  }, [sessions, types]);
+
+  const visibleDays = useMemo(() => {
+    if (typeFilter.size === 0) {
+      return groupedDays;
+    }
+    return groupedDays
+      .map(
+        ([key, daySessions]) =>
+          [
+            key,
+            daySessions.filter((session) =>
+              typeFilter.has(session.training_name),
+            ),
+          ] as const,
+      )
+      .filter(([, daySessions]) => daySessions.length > 0);
+  }, [groupedDays, typeFilter]);
 
   // For each exercise: the last set of the most recent past workout of it,
   // so the first set of the day starts prefilled from where you left off.
@@ -484,106 +521,159 @@ export default function Home() {
             </Card>
           </>
         ) : (
-          <ul className="flex flex-col gap-3">
-            {groupedDays.map(([key, daySessions]) => {
-              const isToday = key === today;
-              // Today is always open for logging; a past day opens only via
-              // its pencil, so history stays compact and tap-safe.
-              const isEditing = isToday || editingDay === key;
+          <>
+            {filterableTypes.length > 1 && (
+              <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <button
+                  type="button"
+                  aria-pressed={typeFilter.size === 0}
+                  onClick={() => setTypeFilter(new Set())}
+                  className={cn(
+                    "h-8 shrink-0 rounded-full px-3 text-xs font-medium ring-1 transition-colors",
+                    typeFilter.size === 0
+                      ? "bg-primary text-primary-foreground ring-primary"
+                      : "ring-foreground/10 text-muted-foreground active:bg-muted",
+                  )}
+                >
+                  All
+                </button>
+                {filterableTypes.map((type) => {
+                  const active = typeFilter.has(type.training_name);
+                  return (
+                    <button
+                      key={type.id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => toggleTypeFilter(type.training_name)}
+                      className={cn(
+                        "flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs font-medium ring-1 transition-colors",
+                        active
+                          ? "bg-primary text-primary-foreground ring-primary"
+                          : "ring-foreground/10 active:bg-muted",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          active
+                            ? "bg-primary-foreground"
+                            : CATEGORY_DOTS[type.category],
+                        )}
+                      />
+                      {type.training_name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-              return (
-                <li key={key}>
-                  <Card
-                    size="sm"
-                    className={cn(isEditing && "ring-primary/30")}
-                  >
-                    <CardHeader>
-                      <CardTitle className="flex items-center justify-between">
-                        {/* The date is the anchor when scrolling, so it sets
+            {visibleDays.length === 0 && (
+              <p className="text-muted-foreground py-10 text-center text-sm">
+                No workouts match this filter.
+              </p>
+            )}
+
+            <ul className="flex flex-col gap-3">
+              {visibleDays.map(([key, daySessions]) => {
+                const isToday = key === today;
+                // Today is always open for logging; a past day opens only via
+                // its pencil, so history stays compact and tap-safe.
+                const isEditing = isToday || editingDay === key;
+
+                return (
+                  <li key={key}>
+                    <Card
+                      size="sm"
+                      className={cn(isEditing && "ring-primary/30")}
+                    >
+                      <CardHeader>
+                        <CardTitle className="flex items-center justify-between">
+                          {/* The date is the anchor when scrolling, so it sets
                             its own size rather than inheriting the card's
                             small title scale. */}
-                        <time
-                          dateTime={key}
-                          className="font-heading text-lg font-semibold tracking-tight"
-                        >
-                          {formatDay(parseDay(key))}
-                        </time>
-                        {isToday ? (
-                          <span className="bg-primary text-primary-foreground rounded-full px-2.5 py-0.5 text-[0.65rem] font-semibold tracking-wide uppercase">
-                            Today
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1">
-                            <span className="text-muted-foreground text-xs font-normal">
-                              {formatWeekday(parseDay(key))}
+                          <time
+                            dateTime={key}
+                            className="font-heading text-lg font-semibold tracking-tight"
+                          >
+                            {formatDay(parseDay(key))}
+                          </time>
+                          {isToday ? (
+                            <span className="bg-primary text-primary-foreground rounded-full px-2.5 py-0.5 text-[0.65rem] font-semibold tracking-wide uppercase">
+                              Today
                             </span>
-                            {editingDay === key ? (
-                              <Button
-                                variant="ghost"
-                                className="text-primary h-8"
-                                onClick={() => setEditingDay(null)}
-                              >
-                                Done
-                              </Button>
-                            ) : (
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                aria-label="Edit this day"
-                                className="text-muted-foreground"
-                                onClick={() => setEditingDay(key)}
-                              >
-                                <PencilIcon className="size-3.5" />
-                              </Button>
-                            )}
-                          </span>
-                        )}
-                      </CardTitle>
-                    </CardHeader>
-
-                    <CardContent className="divide-y">
-                      {daySessions.map((session) => (
-                        <div
-                          key={session.id}
-                          className="py-3 first:pt-0 last:pb-0"
-                        >
-                          <ExerciseLog
-                            session={session}
-                            editable={isEditing}
-                            previousSet={
-                              lastKnownSetByName.get(session.training_name) ??
-                              null
-                            }
-                            onAddSet={addSet}
-                            onEditSet={editSet}
-                            onDeleteSet={deleteSet}
-                            onDeleteSession={deleteSession}
-                          />
-                        </div>
-                      ))}
-
-                      {/* The picker lives at the bottom of whichever day is
-                          open for logging — today, or a pencil-unlocked one. */}
-                      {isEditing && (
-                        <div className="pt-3 first:pt-0">
-                          {daySessions.length === 0 && (
-                            <p className="text-muted-foreground pb-3 text-center text-sm">
-                              Nothing logged yet — pick your first exercise.
-                            </p>
+                          ) : (
+                            <span className="flex items-center gap-1">
+                              <span className="text-muted-foreground text-xs font-normal">
+                                {formatWeekday(parseDay(key))}
+                              </span>
+                              {editingDay === key ? (
+                                <Button
+                                  variant="ghost"
+                                  className="text-primary h-8"
+                                  onClick={() => setEditingDay(null)}
+                                >
+                                  Done
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label="Edit this day"
+                                  className="text-muted-foreground"
+                                  onClick={() => setEditingDay(key)}
+                                >
+                                  <PencilIcon className="size-3.5" />
+                                </Button>
+                              )}
+                            </span>
                           )}
-                          <AddExercise
-                            types={types}
-                            onPick={(type) => addExercise(type, key)}
-                            onCreateType={createType}
-                          />
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </li>
-              );
-            })}
-          </ul>
+                        </CardTitle>
+                      </CardHeader>
+
+                      <CardContent className="divide-y">
+                        {daySessions.map((session) => (
+                          <div
+                            key={session.id}
+                            className="py-3 first:pt-0 last:pb-0"
+                          >
+                            <ExerciseLog
+                              session={session}
+                              editable={isEditing}
+                              previousSet={
+                                lastKnownSetByName.get(session.training_name) ??
+                                null
+                              }
+                              onAddSet={addSet}
+                              onEditSet={editSet}
+                              onDeleteSet={deleteSet}
+                              onDeleteSession={deleteSession}
+                            />
+                          </div>
+                        ))}
+
+                        {/* The picker lives at the bottom of whichever day is
+                          open for logging — today, or a pencil-unlocked one. */}
+                        {isEditing && (
+                          <div className="pt-3 first:pt-0">
+                            {daySessions.length === 0 && (
+                              <p className="text-muted-foreground pb-3 text-center text-sm">
+                                Nothing logged yet — pick your first exercise.
+                              </p>
+                            )}
+                            <AddExercise
+                              types={types}
+                              onPick={(type) => addExercise(type, key)}
+                              onCreateType={createType}
+                            />
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )}
       </main>
 
