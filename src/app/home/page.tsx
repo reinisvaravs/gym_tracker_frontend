@@ -6,8 +6,10 @@ import { AddExercise } from "@/components/add-exercise";
 import { ExerciseLog } from "@/components/exercise-log";
 import {
   CalendarIcon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  FilterIcon,
   ListIcon,
   PencilIcon,
 } from "@/components/icons";
@@ -98,6 +100,7 @@ export default function Home() {
 
   // Names of training types the log view is narrowed to; empty = show all.
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+  const [filterOpen, setFilterOpen] = useState(false);
 
   const toggleTypeFilter = (name: string) =>
     setTypeFilter((current) => {
@@ -109,6 +112,20 @@ export default function Home() {
       }
       return next;
     });
+
+  // Escape closes the filter dropdown, matching the add-exercise sheet
+  useEffect(() => {
+    if (!filterOpen) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setFilterOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [filterOpen]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -267,10 +284,23 @@ export default function Home() {
       : [[today, []] as const, ...entries];
   }, [sessionsByDate, today]);
 
-  // Only types that actually appear in the log are worth offering as chips.
+  // Only types that actually appear in the log are worth offering, most
+  // frequently trained first so the usual suspects sit at the top.
   const filterableTypes = useMemo(() => {
-    const used = new Set(sessions.map((session) => session.training_name));
-    return types.filter((type) => used.has(type.training_name));
+    const counts = new Map<string, number>();
+    for (const session of sessions) {
+      counts.set(
+        session.training_name,
+        (counts.get(session.training_name) ?? 0) + 1,
+      );
+    }
+    return types
+      .filter((type) => counts.has(type.training_name))
+      .sort(
+        (a, b) =>
+          counts.get(b.training_name)! - counts.get(a.training_name)! ||
+          a.training_name.localeCompare(b.training_name),
+      );
   }, [sessions, types]);
 
   const visibleDays = useMemo(() => {
@@ -523,47 +553,83 @@ export default function Home() {
         ) : (
           <>
             {filterableTypes.length > 1 && (
-              <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                <button
-                  type="button"
-                  aria-pressed={typeFilter.size === 0}
-                  onClick={() => setTypeFilter(new Set())}
-                  className={cn(
-                    "h-8 shrink-0 rounded-full px-3 text-xs font-medium ring-1 transition-colors",
-                    typeFilter.size === 0
-                      ? "bg-primary text-primary-foreground ring-primary"
-                      : "ring-foreground/10 text-muted-foreground active:bg-muted",
-                  )}
+              <div className="relative self-end">
+                <Button
+                  variant="outline"
+                  className="h-9"
+                  aria-haspopup="listbox"
+                  aria-expanded={filterOpen}
+                  onClick={() => setFilterOpen((current) => !current)}
                 >
-                  All
-                </button>
-                {filterableTypes.map((type) => {
-                  const active = typeFilter.has(type.training_name);
-                  return (
+                  <FilterIcon className="size-4" />
+                  Filter
+                  {typeFilter.size > 0 && (
+                    <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold tabular-nums">
+                      {typeFilter.size}
+                    </span>
+                  )}
+                </Button>
+
+                {filterOpen && (
+                  <>
+                    {/* invisible backdrop so any outside tap closes it */}
                     <button
-                      key={type.id}
                       type="button"
-                      aria-pressed={active}
-                      onClick={() => toggleTypeFilter(type.training_name)}
-                      className={cn(
-                        "flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs font-medium ring-1 transition-colors",
-                        active
-                          ? "bg-primary text-primary-foreground ring-primary"
-                          : "ring-foreground/10 active:bg-muted",
-                      )}
+                      aria-label="Close filter"
+                      className="fixed inset-0 z-40 cursor-default"
+                      onClick={() => setFilterOpen(false)}
+                    />
+                    <div
+                      role="listbox"
+                      aria-label="Filter by exercise"
+                      aria-multiselectable="true"
+                      className="bg-background ring-foreground/10 absolute top-full right-0 z-50 mt-1 flex max-h-72 w-60 flex-col gap-0.5 overflow-y-auto rounded-xl p-1.5 shadow-lg ring-1"
                     >
-                      <span
-                        className={cn(
-                          "size-1.5 rounded-full",
-                          active
-                            ? "bg-primary-foreground"
-                            : CATEGORY_DOTS[type.category],
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={typeFilter.size === 0}
+                        onClick={() => {
+                          setTypeFilter(new Set());
+                          setFilterOpen(false);
+                        }}
+                        className="hover:bg-muted active:bg-muted flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm font-medium transition-colors"
+                      >
+                        All exercises
+                        {typeFilter.size === 0 && (
+                          <CheckIcon className="text-primary ml-auto size-4 shrink-0" />
                         )}
-                      />
-                      {type.training_name}
-                    </button>
-                  );
-                })}
+                      </button>
+
+                      {filterableTypes.map((type) => {
+                        const active = typeFilter.has(type.training_name);
+                        return (
+                          <button
+                            key={type.id}
+                            type="button"
+                            role="option"
+                            aria-selected={active}
+                            onClick={() => toggleTypeFilter(type.training_name)}
+                            className="hover:bg-muted active:bg-muted flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm font-medium transition-colors"
+                          >
+                            <span
+                              className={cn(
+                                "size-2 shrink-0 rounded-full",
+                                CATEGORY_DOTS[type.category],
+                              )}
+                            />
+                            <span className="truncate">
+                              {type.training_name}
+                            </span>
+                            {active && (
+                              <CheckIcon className="text-primary ml-auto size-4 shrink-0" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -703,6 +769,7 @@ export default function Home() {
               onClick={() => {
                 setView(id);
                 setEditingDay(null);
+                setFilterOpen(false);
               }}
               className={cn(
                 "flex flex-col items-center gap-1 py-2.5 text-[0.7rem] font-medium transition-colors",

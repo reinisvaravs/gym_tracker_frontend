@@ -50,6 +50,12 @@ export const TrashIcon = icon(
   </>,
 );
 
+export const CheckIcon = icon(<path d="M20 6 9 17l-5-5" />);
+
+export const FilterIcon = icon(
+  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />,
+);
+
 export const ChevronLeftIcon = icon(<path d="m15 18-6-6 6-6" />);
 
 export const ChevronRightIcon = icon(<path d="m9 18 6-6-6-6" />);
