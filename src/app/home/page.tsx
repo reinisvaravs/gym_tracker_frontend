@@ -61,20 +61,43 @@ const formatDuration = (seconds: number) => {
     : `${m}:${pad(seconds % 60)}`;
 };
 
-const SET_COLUMNS: {
-  key: keyof TrainingSet;
-  label: string;
-  format: (value: number) => string;
-}[] = [
-  { key: "weight_kg", label: "Weight", format: (v) => `${v} kg` },
-  { key: "reps", label: "Reps", format: (v) => `${v}` },
-  { key: "duration_seconds", label: "Duration", format: formatDuration },
-  { key: "distance_km", label: "Distance", format: (v) => `${v} km` },
-  { key: "avg_speed_kmh", label: "Avg speed", format: (v) => `${v} km/h` },
-  { key: "avg_heart_rate_bpm", label: "Avg HR", format: (v) => `${v} bpm` },
-  { key: "avg_power_watts", label: "Avg power", format: (v) => `${v} W` },
-  { key: "avg_cadence", label: "Cadence", format: (v) => `${v}` },
-];
+// One set on one line, in the shorthand a lifter would actually write:
+// "60 × 8" for weights, "× 12" bodyweight, "5.2 km · 24:30 · 12.7 km/h" cardio.
+// Which parts appear follows the data, so no per-category branching.
+const formatSet = (set: TrainingSet) => {
+  const parts: string[] = [];
+
+  if (set.weight_kg !== null) {
+    parts.push(
+      set.reps !== null
+        ? `${set.weight_kg} × ${set.reps}`
+        : `${set.weight_kg} kg`,
+    );
+  } else if (set.reps !== null) {
+    parts.push(`× ${set.reps}`);
+  }
+
+  if (set.distance_km !== null) {
+    parts.push(`${set.distance_km} km`);
+  }
+  if (set.duration_seconds !== null) {
+    parts.push(formatDuration(set.duration_seconds));
+  }
+  if (set.avg_speed_kmh !== null) {
+    parts.push(`${set.avg_speed_kmh} km/h`);
+  }
+  if (set.avg_heart_rate_bpm !== null) {
+    parts.push(`${set.avg_heart_rate_bpm} bpm`);
+  }
+  if (set.avg_power_watts !== null) {
+    parts.push(`${set.avg_power_watts} W`);
+  }
+  if (set.avg_cadence !== null) {
+    parts.push(`${set.avg_cadence} rpm`);
+  }
+
+  return parts.join(" · ") || "—";
+};
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -122,51 +145,18 @@ const buildMonthGrid = (month: Date) => {
 };
 
 function SessionSets({ sets }: { sets: TrainingSet[] }) {
-  // Only the columns some set actually fills, so a bench session shows two
-  // and a bike ride shows six without a per-category branch.
-  const columns = SET_COLUMNS.filter((column) =>
-    sets.some((set) => set[column.key] !== null),
-  );
-
   if (sets.length === 0) {
-    return <p className="text-muted-foreground text-sm">No sets recorded.</p>;
+    return <p className="text-muted-foreground text-xs">No sets recorded.</p>;
   }
 
   return (
-    <div className="ring-foreground/10 overflow-x-auto rounded-lg ring-1">
-      <table className="w-full text-sm">
-        <thead className="bg-muted/50 text-muted-foreground text-xs">
-          <tr>
-            <th className="px-3 py-2 text-left font-medium">Set</th>
-            {columns.map((column) => (
-              <th key={column.key} className="px-3 py-2 text-right font-medium">
-                {column.label}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sets.map((set) => (
-            <tr key={set.id} className="border-t">
-              <td className="text-muted-foreground px-3 py-2 tabular-nums">
-                {set.set_order}
-              </td>
-              {columns.map((column) => {
-                const value = set[column.key];
-                return (
-                  <td
-                    key={column.key}
-                    className="px-3 py-2 text-right tabular-nums"
-                  >
-                    {value === null ? "—" : column.format(value as number)}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ol className="flex flex-col gap-0.5">
+      {sets.map((set) => (
+        <li key={set.id} className="text-xs tabular-nums">
+          {formatSet(set)}
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -239,6 +229,13 @@ export default function Home() {
     }
     return map;
   }, [sessions]);
+
+  // The API orders sessions newest-first, and a Map keeps insertion order,
+  // so the days come out newest-first too.
+  const groupedDays = useMemo(
+    () => [...sessionsByDate.entries()],
+    [sessionsByDate],
+  );
 
   const days = useMemo(() => buildMonthGrid(month), [month]);
   const todayKey = localKey(new Date());
@@ -461,10 +458,6 @@ export default function Home() {
                       <span className="text-sm font-medium">
                         {session.training_name}
                       </span>
-                      <span className="text-muted-foreground text-xs">
-                        {session.sets.length} set
-                        {session.sets.length === 1 ? "" : "s"}
-                      </span>
                     </div>
                     <SessionSets sets={session.sets} />
                   </div>
@@ -484,37 +477,50 @@ export default function Home() {
         </Card>
       ) : (
         <ul className="flex flex-col gap-3">
-          {sessions.map((session) => (
-            <li key={session.id}>
+          {groupedDays.map(([key, daySessions]) => (
+            <li key={key}>
               <Card size="sm">
                 <CardHeader>
-                  <CardTitle>{session.training_name}</CardTitle>
-                  <CardDescription>
-                    {session.sets.length} set
-                    {session.sets.length === 1 ? "" : "s"}
-                    <span className="mx-1.5">·</span>
-                    <span className="capitalize">
-                      {session.category.replace(/_/g, " ")}
-                    </span>
-                  </CardDescription>
-                  <CardAction>
+                  <CardTitle>
+                    {/* The date is the anchor when scrolling, so it sets its
+                          own size rather than inheriting the card's small
+                          title scale. */}
                     <time
-                      dateTime={session.performed_on}
-                      className="text-muted-foreground text-xs tabular-nums"
+                      dateTime={key}
+                      className="font-heading text-lg font-semibold tracking-tight"
                     >
-                      {formatDay(parseDay(session.performed_on))}
+                      {formatDay(parseDay(key))}
                     </time>
-                  </CardAction>
+                  </CardTitle>
                 </CardHeader>
-                {session.notes && (
-                  <CardContent>
-                    <p className="text-muted-foreground border-l-2 pl-3 text-sm">
-                      {session.notes}
-                    </p>
-                  </CardContent>
-                )}
-                <CardContent>
-                  <SessionSets sets={session.sets} />
+
+                <CardContent className="divide-y">
+                  {daySessions.map((session) => (
+                    <div
+                      key={session.id}
+                      className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0"
+                    >
+                      <div className="flex items-baseline gap-2">
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            CATEGORY_DOTS[session.category],
+                          )}
+                        />
+                        <span className="text-sm font-medium">
+                          {session.training_name}
+                        </span>
+                      </div>
+
+                      <SessionSets sets={session.sets} />
+
+                      {session.notes && (
+                        <p className="text-muted-foreground border-l-2 pl-2 text-xs">
+                          {session.notes}
+                        </p>
+                      )}
+                    </div>
+                  ))}
                 </CardContent>
               </Card>
             </li>
