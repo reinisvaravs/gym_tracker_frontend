@@ -54,6 +54,14 @@ export const api = {
       body: JSON.stringify({ notes }),
     }),
 
+  // A whole day's exercises in their new order; the server renumbers
+  // session_order 1..n from the position of each id in the array.
+  reorderSessions: (performedOn: string, sessionIds: number[]) =>
+    request<{ ids: number[] }>("/sessions/reorder", {
+      method: "PUT",
+      body: JSON.stringify({ performedOn, sessionIds }),
+    }),
+
   addSet: (sessionId: number, set: SetInput) =>
     request<TrainingSet>("/sessions/sets/create", {
       method: "POST",

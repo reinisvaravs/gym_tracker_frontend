@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AddExercise } from "@/components/add-exercise";
 import { ExerciseLog } from "@/components/exercise-log";
@@ -98,6 +98,40 @@ export default function Home() {
   // the rest of the history compact and safe from stray taps.
   const [editingDay, setEditingDay] = useState<string | null>(null);
 
+  // A day the date picker opened that has nothing logged on it yet. The log
+  // only lists days that already have sessions, so a forgotten day needs one
+  // to be conjured; it drops back out if it is closed still empty.
+  const [pickedDay, setPickedDay] = useState<string | null>(null);
+
+  const openDay = (day: string) => {
+    setPickedDay(day);
+    setEditingDay(day);
+  };
+
+  const closeDay = (day: string) => {
+    setEditingDay(null);
+    setPickedDay((current) => (current === day ? null : current));
+  };
+
+  // The date field is transparent and sits under the button purely so the
+  // native picker has something to anchor to. Clicking it directly only
+  // focuses its (invisible) segments, so the button drives it instead.
+  const dateInput = useRef<HTMLInputElement>(null);
+
+  const pickDay = () => {
+    const input = dateInput.current;
+    if (!input) {
+      return;
+    }
+    try {
+      input.showPicker();
+    } catch {
+      // Older browsers, or a picker that refuses: focusing at least lets the
+      // field be typed into.
+      input.focus();
+    }
+  };
+
   // Names of training types the log view is narrowed to; empty = show all.
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [filterOpen, setFilterOpen] = useState(false);
@@ -126,6 +160,17 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [filterOpen]);
+
+  // The opened day sorts into the list by date, so it usually lands below
+  // the fold rather than where the tap happened.
+  useEffect(() => {
+    if (!pickedDay) {
+      return;
+    }
+    document
+      .getElementById(`day-${pickedDay}`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [pickedDay]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -249,6 +294,50 @@ export default function Home() {
     [run],
   );
 
+  // Optimistic: the arrows have to feel instant, and the whole day is sent
+  // so the server renumbers in one transaction rather than the client
+  // guessing at two half-applied swaps. A failure puts the old order back.
+  const moveSession = useCallback(
+    (day: string, sessionId: number, delta: number) => {
+      const snapshot = sessions;
+      const ids = snapshot
+        .filter((session) => session.performed_on.slice(0, 10) === day)
+        .sort((a, b) => a.session_order - b.session_order)
+        .map((session) => session.id);
+
+      const from = ids.indexOf(sessionId);
+      const to = from + delta;
+      if (from < 0 || to < 0 || to >= ids.length) {
+        return;
+      }
+      [ids[from], ids[to]] = [ids[to], ids[from]];
+
+      const order = new Map(ids.map((id, index) => [id, index + 1]));
+      setSessions((current) =>
+        sortSessions(
+          current.map((session) => {
+            const position = order.get(session.id);
+            return position === undefined
+              ? session
+              : { ...session, session_order: position };
+          }),
+        ),
+      );
+
+      run(async () => {
+        try {
+          await api.reorderSessions(day, ids);
+        } catch (reorderError) {
+          setSessions(snapshot);
+          throw reorderError;
+        }
+      }).catch(() => {
+        // run() has already put the message in the snackbar
+      });
+    },
+    [run, sessions],
+  );
+
   const deleteSession = useCallback(
     (sessionId: number) =>
       run(async () => {
@@ -274,15 +363,41 @@ export default function Home() {
     return map;
   }, [sessions]);
 
-  // The API orders sessions newest day first, and a Map keeps insertion
-  // order, so the days come out newest-first too. Today is pinned to the top
-  // even before it has any exercises, since that is what you log into.
+  // Arrows are hidden on a lone exercise and greyed at the ends of the day.
+  // The position comes from the day's full list rather than the filtered one,
+  // so reordering under an active filter still moves against the real order.
+  const moveProps = (
+    day: string,
+    sessionId: number,
+  ): { onMoveUp?: () => void; onMoveDown?: () => void } => {
+    const ordered = sessionsByDate.get(day) ?? [];
+    if (ordered.length < 2) {
+      return {};
+    }
+    const index = ordered.findIndex((session) => session.id === sessionId);
+    return {
+      onMoveUp: index > 0 ? () => moveSession(day, sessionId, -1) : undefined,
+      onMoveDown:
+        index < ordered.length - 1
+          ? () => moveSession(day, sessionId, 1)
+          : undefined,
+    };
+  };
+
+  // Newest day first. Today is always present even before it has any
+  // exercises, since that is what you log into, and so is a day opened from
+  // the date picker. Both are appended and the whole list re-sorted, because
+  // a Map keeps insertion order rather than date order.
   const groupedDays = useMemo(() => {
-    const entries = [...sessionsByDate.entries()];
-    return sessionsByDate.has(today)
-      ? entries
-      : [[today, []] as const, ...entries];
-  }, [sessionsByDate, today]);
+    const days = new Map(sessionsByDate);
+    if (!days.has(today)) {
+      days.set(today, []);
+    }
+    if (pickedDay && !days.has(pickedDay)) {
+      days.set(pickedDay, []);
+    }
+    return [...days.entries()].sort(([a], [b]) => b.localeCompare(a));
+  }, [sessionsByDate, today, pickedDay]);
 
   // Only types that actually appear in the log are worth offering, most
   // frequently trained first so the usual suspects sit at the top.
@@ -317,8 +432,10 @@ export default function Home() {
             ),
           ] as const,
       )
-      .filter(([, daySessions]) => daySessions.length > 0);
-  }, [groupedDays, typeFilter]);
+      .filter(
+        ([key, daySessions]) => daySessions.length > 0 || key === pickedDay,
+      );
+  }, [groupedDays, typeFilter, pickedDay]);
 
   // For each exercise: the last set of the most recent past workout of it,
   // so the first set of the day starts prefilled from where you left off.
@@ -429,6 +546,10 @@ export default function Home() {
                   const inMonth = day.getMonth() === month.getMonth();
                   const selected = selectedKey === key;
 
+                  // Only the first name is spelled out — an ellipsis stands
+                  // in for the rest, and the day card below lists them all.
+                  const [first, ...rest] = daySessions;
+
                   return (
                     <button
                       key={key}
@@ -441,7 +562,7 @@ export default function Home() {
                         setSelectedKey(key);
                       }}
                       className={cn(
-                        "flex aspect-square flex-col items-center justify-center gap-0.5 rounded-lg text-sm tabular-nums transition-colors",
+                        "flex aspect-square flex-col items-center gap-0.5 overflow-hidden rounded-lg p-0.5 pt-1 transition-colors",
                         !inMonth && "text-muted-foreground/50",
                         selected
                           ? "bg-primary text-primary-foreground font-semibold"
@@ -451,19 +572,28 @@ export default function Home() {
                           "text-primary ring-primary/40 font-bold ring-1",
                       )}
                     >
-                      {day.getDate()}
-                      <span className="flex h-1 items-center gap-0.5">
-                        {daySessions.slice(0, 3).map((session) => (
-                          <span
-                            key={session.id}
-                            className={cn(
-                              "size-1 rounded-full",
-                              selected
-                                ? "bg-primary-foreground"
-                                : CATEGORY_DOTS[session.category],
-                            )}
-                          />
-                        ))}
+                      <span className="text-[0.7rem] leading-none tabular-nums">
+                        {day.getDate()}
+                      </span>
+
+                      {/* The names are what the month is scanned for, so they
+                          replace the category dots rather than sit beside
+                          them — the palette is greyscale and a name says more
+                          than its shade did. */}
+                      <span
+                        className={cn(
+                          "flex w-full flex-col gap-px text-[0.55rem] leading-tight font-normal",
+                          selected
+                            ? "text-primary-foreground/90"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        {first && (
+                          <span className="truncate">
+                            {first.training_name}
+                          </span>
+                        )}
+                        {rest.length > 0 && <span aria-hidden>…</span>}
                       </span>
                     </button>
                   );
@@ -528,6 +658,7 @@ export default function Home() {
                     <ExerciseLog
                       session={session}
                       editable={editingDay === selectedKey}
+                      {...moveProps(selectedKey, session.id)}
                       previousSet={
                         lastKnownSetByName.get(session.training_name) ?? null
                       }
@@ -552,86 +683,113 @@ export default function Home() {
           </>
         ) : (
           <>
-            {filterableTypes.length > 1 && (
-              <div className="relative self-end">
-                <Button
-                  variant="outline"
-                  className="h-9"
-                  aria-haspopup="listbox"
-                  aria-expanded={filterOpen}
-                  onClick={() => setFilterOpen((current) => !current)}
-                >
-                  <FilterIcon className="size-4" />
-                  Filter
-                  {typeFilter.size > 0 && (
-                    <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold tabular-nums">
-                      {typeFilter.size}
-                    </span>
-                  )}
+            <div className="flex items-center justify-between gap-2">
+              <div className="relative">
+                <Button variant="outline" className="h-9" onClick={pickDay}>
+                  <CalendarIcon className="size-4" />
+                  Earlier day
                 </Button>
+                <input
+                  ref={dateInput}
+                  type="date"
+                  max={today}
+                  tabIndex={-1}
+                  aria-label="Log an earlier day"
+                  className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
+                  onChange={(event) => {
+                    const day = event.target.value;
+                    // Cleared so re-picking the same day fires again
+                    event.target.value = "";
+                    if (day && day <= today) {
+                      openDay(day);
+                    }
+                  }}
+                />
+              </div>
 
-                {filterOpen && (
-                  <>
-                    {/* invisible backdrop so any outside tap closes it */}
-                    <button
-                      type="button"
-                      aria-label="Close filter"
-                      className="fixed inset-0 z-40 cursor-default"
-                      onClick={() => setFilterOpen(false)}
-                    />
-                    <div
-                      role="listbox"
-                      aria-label="Filter by exercise"
-                      aria-multiselectable="true"
-                      className="bg-background ring-foreground/10 absolute top-full right-0 z-50 mt-1 flex max-h-72 w-60 flex-col gap-0.5 overflow-y-auto rounded-xl p-1.5 shadow-lg ring-1"
-                    >
+              {filterableTypes.length > 1 && (
+                <div className="relative">
+                  <Button
+                    variant="outline"
+                    className="h-9"
+                    aria-haspopup="listbox"
+                    aria-expanded={filterOpen}
+                    onClick={() => setFilterOpen((current) => !current)}
+                  >
+                    <FilterIcon className="size-4" />
+                    Filter
+                    {typeFilter.size > 0 && (
+                      <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold tabular-nums">
+                        {typeFilter.size}
+                      </span>
+                    )}
+                  </Button>
+
+                  {filterOpen && (
+                    <>
+                      {/* invisible backdrop so any outside tap closes it */}
                       <button
                         type="button"
-                        role="option"
-                        aria-selected={typeFilter.size === 0}
-                        onClick={() => {
-                          setTypeFilter(new Set());
-                          setFilterOpen(false);
-                        }}
-                        className="hover:bg-muted active:bg-muted flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm font-medium transition-colors"
+                        aria-label="Close filter"
+                        className="fixed inset-0 z-40 cursor-default"
+                        onClick={() => setFilterOpen(false)}
+                      />
+                      <div
+                        role="listbox"
+                        aria-label="Filter by exercise"
+                        aria-multiselectable="true"
+                        className="bg-background ring-foreground/10 absolute top-full right-0 z-50 mt-1 flex max-h-72 w-60 flex-col gap-0.5 overflow-y-auto rounded-xl p-1.5 shadow-lg ring-1"
                       >
-                        All exercises
-                        {typeFilter.size === 0 && (
-                          <CheckIcon className="text-primary ml-auto size-4 shrink-0" />
-                        )}
-                      </button>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={typeFilter.size === 0}
+                          onClick={() => {
+                            setTypeFilter(new Set());
+                            setFilterOpen(false);
+                          }}
+                          className="hover:bg-muted active:bg-muted flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm font-medium transition-colors"
+                        >
+                          All exercises
+                          {typeFilter.size === 0 && (
+                            <CheckIcon className="text-primary ml-auto size-4 shrink-0" />
+                          )}
+                        </button>
 
-                      {filterableTypes.map((type) => {
-                        const active = typeFilter.has(type.training_name);
-                        return (
-                          <button
-                            key={type.id}
-                            type="button"
-                            role="option"
-                            aria-selected={active}
-                            onClick={() => toggleTypeFilter(type.training_name)}
-                            className="hover:bg-muted active:bg-muted flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm font-medium transition-colors"
-                          >
-                            <span
-                              className={cn(
-                                "size-2 shrink-0 rounded-full",
-                                CATEGORY_DOTS[type.category],
+                        {filterableTypes.map((type) => {
+                          const active = typeFilter.has(type.training_name);
+                          return (
+                            <button
+                              key={type.id}
+                              type="button"
+                              role="option"
+                              aria-selected={active}
+                              onClick={() =>
+                                toggleTypeFilter(type.training_name)
+                              }
+                              className="hover:bg-muted active:bg-muted flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm font-medium transition-colors"
+                            >
+                              <span
+                                className={cn(
+                                  "size-2 shrink-0 rounded-full",
+                                  CATEGORY_DOTS[type.category],
+                                )}
+                              />
+                              <span className="truncate">
+                                {type.training_name}
+                              </span>
+                              {active && (
+                                <CheckIcon className="text-primary ml-auto size-4 shrink-0" />
                               )}
-                            />
-                            <span className="truncate">
-                              {type.training_name}
-                            </span>
-                            {active && (
-                              <CheckIcon className="text-primary ml-auto size-4 shrink-0" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
 
             {visibleDays.length === 0 && (
               <p className="text-muted-foreground py-10 text-center text-sm">
@@ -642,12 +800,13 @@ export default function Home() {
             <ul className="flex flex-col gap-3">
               {visibleDays.map(([key, daySessions]) => {
                 const isToday = key === today;
-                // Today is always open for logging; a past day opens only via
-                // its pencil, so history stays compact and tap-safe.
+                // Today is always open for logging; a past day opens via its
+                // pencil or the date picker, so history stays compact and
+                // tap-safe until you ask for it.
                 const isEditing = isToday || editingDay === key;
 
                 return (
-                  <li key={key}>
+                  <li key={key} id={`day-${key}`}>
                     <Card
                       size="sm"
                       className={cn(isEditing && "ring-primary/30")}
@@ -676,7 +835,7 @@ export default function Home() {
                                 <Button
                                   variant="ghost"
                                   className="text-primary h-8"
-                                  onClick={() => setEditingDay(null)}
+                                  onClick={() => closeDay(key)}
                                 >
                                   Done
                                 </Button>
@@ -705,6 +864,7 @@ export default function Home() {
                             <ExerciseLog
                               session={session}
                               editable={isEditing}
+                              {...moveProps(key, session.id)}
                               previousSet={
                                 lastKnownSetByName.get(session.training_name) ??
                                 null
@@ -769,6 +929,7 @@ export default function Home() {
               onClick={() => {
                 setView(id);
                 setEditingDay(null);
+                setPickedDay(null);
                 setFilterOpen(false);
               }}
               className={cn(

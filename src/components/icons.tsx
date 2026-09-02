@@ -60,6 +60,10 @@ export const ChevronLeftIcon = icon(<path d="m15 18-6-6 6-6" />);
 
 export const ChevronRightIcon = icon(<path d="m9 18 6-6-6-6" />);
 
+export const ChevronUpIcon = icon(<path d="m18 15-6-6-6 6" />);
+
+export const ChevronDownIcon = icon(<path d="m6 9 6 6 6-6" />);
+
 export const ListIcon = icon(
   <>
     <line x1="8" x2="21" y1="6" y2="6" />

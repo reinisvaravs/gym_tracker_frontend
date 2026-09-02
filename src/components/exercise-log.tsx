@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 
-import { PencilIcon, PlusIcon, TrashIcon } from "@/components/icons";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  PencilIcon,
+  PlusIcon,
+  TrashIcon,
+} from "@/components/icons";
 import { SetForm } from "@/components/set-form";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,6 +28,8 @@ export function ExerciseLog({
   onEditSet,
   onDeleteSet,
   onDeleteSession,
+  onMoveUp,
+  onMoveDown,
 }: {
   session: Session;
   // Read-only for past days; the log controls only appear where you're logging
@@ -33,6 +41,10 @@ export function ExerciseLog({
   onEditSet: (setId: number, set: SetInput) => Promise<void>;
   onDeleteSet: (setId: number) => Promise<void>;
   onDeleteSession: (sessionId: number) => Promise<void>;
+  // Both absent when the day holds a single exercise and there is nothing to
+  // reorder; one absent at either end of the day, which greys that arrow out.
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   const [editingSetId, setEditingSetId] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
@@ -72,15 +84,41 @@ export function ExerciseLog({
               </Button>
             </span>
           ) : (
-            <Button
-              variant="ghost"
-              size="icon-lg"
-              aria-label={`Remove ${session.training_name}`}
-              className="text-muted-foreground ml-auto"
-              onClick={() => setConfirmRemove(true)}
-            >
-              <TrashIcon />
-            </Button>
+            <span className="ml-auto flex shrink-0 items-center">
+              {(onMoveUp || onMoveDown) && (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon-lg"
+                    aria-label={`Move ${session.training_name} earlier`}
+                    className="text-muted-foreground"
+                    disabled={!onMoveUp}
+                    onClick={onMoveUp}
+                  >
+                    <ChevronUpIcon />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-lg"
+                    aria-label={`Move ${session.training_name} later`}
+                    className="text-muted-foreground"
+                    disabled={!onMoveDown}
+                    onClick={onMoveDown}
+                  >
+                    <ChevronDownIcon />
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-lg"
+                aria-label={`Remove ${session.training_name}`}
+                className="text-muted-foreground"
+                onClick={() => setConfirmRemove(true)}
+              >
+                <TrashIcon />
+              </Button>
+            </span>
           ))}
       </div>
 
